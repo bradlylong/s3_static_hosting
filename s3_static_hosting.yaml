@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Website CloudFormation Template
+#
+# This template builds the infrastructure for my website hosted in S3
+#
+Resources:
+#
+# First we are creating an S3 bucket and bucket policy for out website
+# Files need to be uploaded manualy at this point in time
+#
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: "true"
+        BlockPublicPolicy: "true"
+        IgnorePublicAcls: "true"
+        RestrictPublicBuckets: "true"
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "s3:GetObject"
+            Effect: Allow
+            Principal: 
+              AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${WebsiteAccessIdentity}"
+            Resource:
+              - !Join ["", ["arn:aws:s3:::", !Ref "WebsiteBucket"]]
+              - !Join ["", ["arn:aws:s3:::", !Ref "WebsiteBucket", /*]]
+#
+# We also need an SNS topic and topic policy for our "contact me" actions
+# Users will trigger a publish to SNS using AWS JavaScript SDK
+#
+  WebsiteSnsTopic:
+    Type: AWS::SNS::Topic
+    Properties: 
+        Subscription: 
+          - Endpoint: <YOUR_EMAIL>
+            Protocol: email
+  WebsiteSnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties: 
+        PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Principal:
+                    Federated: cognito-identity.amazonaws.com
+                Action: SNS:Publish
+                Resource: !Ref WebsiteSnsTopic
+        Topics:
+          - !Ref WebsiteSnsTopic
+#
+# Next, we need to create IAM roles that we will attach to our Cognito Identity Pool
+# Cognito needs two roles, Authenticated Users (future use) and UnAuthenticated Users
+#
+  IamRoleCognitoUnAuth:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - "sts:AssumeRoleWithWebIdentity"
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Ref WebsiteCognitoIdPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: unauthenticated
+      Path: /
+      Policies:
+        - PolicyName: CognitoUnAuthPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "mobileanalytics:PutEvents"
+                  - "cognito-sync:*"
+                  - "sns:Publish"
+                Resource: "*"
+        - PolicyName: WebsiteSnsTopicAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sns:Publish"
+                Resource: !Ref WebsiteSnsTopic
+  IamRoleCognitoAuth:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - "sts:AssumeRoleWithWebIdentity"
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Ref WebsiteCognitoIdPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: authenticated
+      Path: /
+      Policies:
+        - PolicyName: CognitoAuthPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "mobileanalytics:PutEvents"
+                  - "cognito-identity:*"
+                  - "cognito-sync:*"
+                  - "sns:Publish"
+                Resource: "*"
+        - PolicyName: WebsiteSnsTopicAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sns:Publish"
+                Resource: !Ref WebsiteSnsTopic
+#
+# Create and attach roles to Cognito Identity Pool
+#
+  WebsiteCognitoIdPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      AllowUnauthenticatedIdentities: true
+  WebsiteIdPoolRoleAttachment: 
+    Type: AWS::Cognito::IdentityPoolRoleAttachment 
+    Properties: 
+      IdentityPoolId: !Ref WebsiteCognitoIdPool
+      Roles: 
+        "authenticated": !GetAtt IamRoleCognitoAuth.Arn
+        "unauthenticated": !GetAtt IamRoleCognitoUnAuth.Arn
+  #
+  # Creating CloudFront Distribution for CDN
+  # Using OriginAccessIdentity and bucket policy for access control
+  #
+  WebsiteAccessIdentity:
+    Type: "AWS::CloudFront::CloudFrontOriginAccessIdentity"
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: "Website Access Identity"
+  WebsiteDistrobution:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !Join ["", [!Ref WebsiteBucket, ".s3.amazonaws.com"]]
+            Id: "WebsiteOrigin"
+            S3OriginConfig:
+              OriginAccessIdentity: !Join ["", ["origin-access-identity/cloudfront/", !Ref WebsiteAccessIdentity]] 
+        Enabled: "true"
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+          TargetOriginId: "WebsiteOrigin"
+          ViewerProtocolPolicy: redirect-to-https
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+        DefaultRootObject: index.html
+        Aliases:
+          - "<YOUR_ALIASES>"
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: "<YOUR_CERT_ARN>" 
+          SslSupportMethod: sni-only
+#
+# At this point you only need to update Route53 A records to point to your distribution
+#

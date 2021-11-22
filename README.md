@@ -1,2 +1,2 @@
 # s3_static_hosting
-Example template that I used to deploy an s3 static website with cloud formation.
+Example template that I previously used to deploy an S3 static website using CloudFormation.
